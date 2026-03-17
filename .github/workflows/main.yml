@@ -1,0 +1,56 @@
+name: CI/CD Python Service
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # SAST - Análise de Código Estático (Python)
+      - name: Run Bandit (SAST)
+        run: |
+          pip install bandit
+          bandit -r . -f json -o bandit-report.json || true
+
+      # SCA - Vulnerabilidades em Dependências
+      - name: Run Safety (SCA)
+        run: |
+          pip install safety
+          safety check
+
+  build-and-push:
+    needs: security
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build Image
+        run: docker build -t ${{ steps.login-ecr.outputs.registry }}/${{ github.event.repository.name }}:latest .
+
+      # SCA da Imagem Docker (Vulnerabilidades de OS)
+      - name: Run Trivy Scanner (Container Scan)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ steps.login-ecr.outputs.registry }}/${{ github.event.repository.name }}:latest
+          format: 'table'
+          exit-code: '1' # Falha a esteira se encontrar algo crítico
+          ignore-unfixed: true
+          severity: 'CRITICAL,HIGH'
+
+      - name: Push to ECR
+        run: docker push ${{ steps.login-ecr.outputs.registry }}/${{ github.event.repository.name }}:latest
